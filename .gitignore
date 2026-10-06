@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
+.env
+.env.*
+*.pem
+*.key
+project.json
+before-*.json
+solver*report*.json
