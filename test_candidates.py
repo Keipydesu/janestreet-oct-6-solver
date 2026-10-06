@@ -78,10 +78,43 @@ class SymmetryGeneratorTests(unittest.TestCase):
             self.assertEqual(direct['heatmap'],reference['heatmap'])
             self.assertNotIn('Asymmetric',direct['rejections'])
 
+    def test_clue_pruning_matches_exhaustive_connected_growth(self):
+        # Independent enumeration grows ALL connected shapes, without the new
+        # hereditary predicate. Compare full cell/capitol sets, not just counts.
+        from candidate_search import search_candidates
+        supplied = new_workspace().saved
+        enclosed = GridState()
+        enclosed.grid[0][0].starting_number = 2
+        zeros = GridState()
+        zeros.grid[0][0].starting_number = 0
+        zeros.grid[0][2].starting_number = 0
+        scenarios = [(supplied, (0,2)), (supplied, (2,5)),
+                     (supplied, (4,10)), (enclosed, (0,0)), (zeros, (0,0))]
+        reasons = set()
+        for state, root in scenarios:
+            with self.subTest(root=root, clues=state.to_dict()):
+                args = dict(max_area=5, time_limit=20, node_limit=500000,
+                            preview_limit=None)
+                actual = search_candidates(state, *root, **args)
+                expected = search_candidates(state, *root,
+                                             strategy='connected_growth', **args)
+                self.assertTrue(actual['complete_within_limit'])
+                self.assertTrue(expected['complete_within_limit'])
+                def signatures(result):
+                    return {(tuple(map(tuple, candidate['cells'])),
+                             tuple(candidate['capitol']) if candidate['capitol'] else None)
+                            for candidate in result['survivors']}
+                self.assertEqual(signatures(actual), signatures(expected))
+                self.assertEqual(actual['heatmap'], expected['heatmap'])
+                reasons.update(actual['branch_prunes'])
+        self.assertTrue({'Forced singleton', 'Multiple zero clues',
+                         'Clue 1 blocked', 'Enclosed positive clue'} <= reasons)
+
     def test_larger_search_and_board_limit(self):
         state = new_workspace().saved
         result = state.candidate_states(0,2,121,time_limit=10,node_limit=30000,preview_limit=None)
-        self.assertEqual(result['max_examined_area'],121)
+        self.assertLessEqual(result['max_examined_area'],121)
+        self.assertGreater(sum(result['branch_prunes'].values()),0)
         self.assertGreater(result['max_survivor_area'],20)
         for candidate in result['survivors']:
             self.assertTrue(state.shape_symmetry(candidate['cells'])['symmetric'])

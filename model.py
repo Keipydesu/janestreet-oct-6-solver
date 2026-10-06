@@ -76,43 +76,50 @@ class GridState:
         These are all possible nontrivial symmetries of a finite square-cell shape.
         Numbers, colors, and capital markers are not part of this shape test.
         """
-        cells = set(tuple(cell) for cell in cells)
+        cells = list(set(tuple(cell) for cell in cells))
         if not cells:
             raise ValueError('A shape must contain at least one cell.')
 
-        def normalize(points):
-            points = set(points)
-            r0 = min(r for r, c in points)
-            c0 = min(c for r, c in points)
-            return frozenset((r-r0, c-c0) for r, c in points)
+        # Each transform is paired with the row/column minimum of the
+        # transformed bounding box, computed directly from the original
+        # extrema (no rescanning): this avoids rebuilding a translated
+        # frozenset per candidate transform just to find where it lands.
+        min_r = min(r for r, c in cells)
+        max_r = max(r for r, c in cells)
+        min_c = min(c for r, c in cells)
+        max_c = max(c for r, c in cells)
+        original = frozenset((r - min_r, c - min_c) for r, c in cells)
 
-        original = normalize(cells)
         rotations = {
-            90: lambda r, c: (-c, r),
-            180: lambda r, c: (-r, -c),
-            270: lambda r, c: (c, -r),
+            90: (lambda r, c: (-c, r), -max_c, min_r),
+            180: (lambda r, c: (-r, -c), -max_r, -max_c),
+            270: (lambda r, c: (c, -r), min_c, -max_r),
         }
         reflections = {
-            'horizontal': lambda r, c: (-r, c),
-            'vertical': lambda r, c: (r, -c),
-            'main_diagonal': lambda r, c: (c, r),
-            'anti_diagonal': lambda r, c: (-c, -r),
+            'horizontal': (lambda r, c: (-r, c), -max_r, min_c),
+            'vertical': (lambda r, c: (r, -c), min_r, -max_c),
+            'main_diagonal': (lambda r, c: (c, r), min_c, min_r),
+            'anti_diagonal': (lambda r, c: (-c, -r), -max_c, -max_r),
         }
-        angles = [angle for angle, transform in rotations.items()
-                  if normalize(transform(r, c) for r, c in cells) == original]
-        axes = [axis for axis, transform in reflections.items()
-                if normalize(transform(r, c) for r, c in cells) == original]
-        operations = []
-        base_r = min(r for r,c in cells)
-        base_c = min(c for r,c in cells)
-        for kind, transforms, names in (('rotation', rotations, angles), ('reflection', reflections, axes)):
-            for name in names:
-                transform = transforms[name]
-                moved = {cell: transform(*cell) for cell in cells}
-                dr = base_r - min(r for r,c in moved.values())
-                dc = base_c - min(c for r,c in moved.values())
-                fixed = sorted([list(cell) for cell,(r,c) in moved.items() if cell == (r+dr,c+dc)])
-                operations.append({'kind':kind, 'name':name, 'fixed_cells':fixed, 'fixed_count':len(fixed)})
+        angles, axes, operations = [], [], []
+        for kind, table in (('rotation', rotations), ('reflection', reflections)):
+            for name, (transform, dr0, dc0) in table.items():
+                # dr0/dc0 translate the transformed shape to the same corner
+                # as `original`, so this one pass both tests equality with
+                # `original` and finds cells a translated transform fixes.
+                normalized = set()
+                fixed = []
+                for r, c in cells:
+                    tr, tc = transform(r, c)
+                    point = (tr - dr0, tc - dc0)
+                    normalized.add(point)
+                    if point == (r - min_r, c - min_c):
+                        fixed.append([r, c])
+                if normalized != original:
+                    continue
+                (angles if kind == 'rotation' else axes).append(name)
+                fixed.sort()
+                operations.append({'kind': kind, 'name': name, 'fixed_cells': fixed, 'fixed_count': len(fixed)})
         return {'rotations': angles, 'reflections': axes,
                 'rotationally_symmetric': bool(angles),
                 'reflectionally_symmetric': bool(axes),

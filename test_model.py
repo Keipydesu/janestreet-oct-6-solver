@@ -314,6 +314,65 @@ class ModelTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             GridState.shape_symmetry([])
 
+    def test_symmetry_matches_brute_force_reference_on_random_shapes(self):
+        """shape_symmetry uses analytic bounding-box offsets per transform
+        instead of re-scanning for a translation each time; this checks the
+        optimized path against a naive brute-force transform+translate+compare
+        on many random (including disconnected, negative-coordinate) shapes.
+        """
+        import random
+
+        def brute_force(cells):
+            cells = set(tuple(cell) for cell in cells)
+
+            def normalize(points):
+                points = set(points)
+                r0 = min(r for r, c in points)
+                c0 = min(c for r, c in points)
+                return frozenset((r - r0, c - c0) for r, c in points)
+
+            original = normalize(cells)
+            rotations = {90: lambda r, c: (-c, r), 180: lambda r, c: (-r, -c), 270: lambda r, c: (c, -r)}
+            reflections = {'horizontal': lambda r, c: (-r, c), 'vertical': lambda r, c: (r, -c),
+                           'main_diagonal': lambda r, c: (c, r), 'anti_diagonal': lambda r, c: (-c, -r)}
+            angles = [a for a, t in rotations.items() if normalize(t(r, c) for r, c in cells) == original]
+            axes = [a for a, t in reflections.items() if normalize(t(r, c) for r, c in cells) == original]
+            base_r, base_c = min(r for r, c in cells), min(c for r, c in cells)
+            operations = []
+            for kind, table, names in (('rotation', rotations, angles), ('reflection', reflections, axes)):
+                for name in names:
+                    transform = table[name]
+                    moved = {cell: transform(*cell) for cell in cells}
+                    dr = base_r - min(r for r, c in moved.values())
+                    dc = base_c - min(c for r, c in moved.values())
+                    fixed = sorted([list(cell) for cell, (r, c) in moved.items() if cell == (r + dr, c + dc)])
+                    operations.append({'kind': kind, 'name': name, 'fixed_cells': fixed, 'fixed_count': len(fixed)})
+            return {'rotations': angles, 'reflections': axes, 'symmetric': bool(angles or axes),
+                    'operations': sorted((o['kind'], o['name'], o['fixed_count'], tuple(map(tuple, o['fixed_cells'])))
+                                          for o in operations)}
+
+        rng = random.Random(1234)
+        for sample in range(500):
+            n = rng.randint(1, 10)
+            cells = {(rng.randint(-5, 5), rng.randint(-5, 5))}
+            while len(cells) < n:
+                r, c = rng.choice(list(cells))
+                dr, dc = rng.choice([(-1, 0), (1, 0), (0, -1), (0, 1)])
+                cells.add((r + dr, c + dc))
+            if sample % 2:
+                # Neighbor growth above is always connected. An isolated cell
+                # exercises arbitrary disconnected inputs as well.
+                cells.add((max(r for r, c in cells) + 3, 0))
+            shape = [list(cell) for cell in cells]
+            fast = GridState.shape_symmetry(shape)
+            fast_ops = sorted((o['kind'], o['name'], o['fixed_count'], tuple(map(tuple, o['fixed_cells'])))
+                               for o in fast['operations'])
+            reference = brute_force(shape)
+            self.assertEqual(fast['rotations'], reference['rotations'], shape)
+            self.assertEqual(fast['reflections'], reference['reflections'], shape)
+            self.assertEqual(fast['symmetric'], reference['symmetric'], shape)
+            self.assertEqual(fast_ops, reference['operations'], shape)
+
     def test_region_symmetries_keep_disconnected_colors_separate(self):
         w = Workspace()
         w.edit('regions', [[0,0],[0,1],[5,5]], '#abcdef')

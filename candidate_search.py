@@ -48,6 +48,38 @@ def search_candidates(state, row, col, max_area=7, time_limit=8.0, node_limit=10
     strategy=strategy or 'symmetry_orbits'
     if strategy not in ('symmetry_orbits','connected_growth'): raise ValueError('Unknown enumeration strategy.')
 
+    # These failures remain failures in EVERY strict superset. In particular,
+    # never prune a small shape merely for missing area, symmetry or paint.
+    forced_mask = sum(1 << i for i in forced)
+    zero_mask = sum(1 << i for i in zeros)
+    singleton_groups = [sum(1 << i for i in group) for group in groups]
+    positive_stars = sorted((n, (1 << i) | sum(1 << j for j in NEIGHBORS[i]))
+                            for i, n in clues.items() if n > 0)
+    branch_prunes = Counter()
+
+    def can_extend(mask):
+        reason = None
+        if mask & forced_mask:
+            reason = 'Forced singleton'
+        elif (mask & zero_mask).bit_count() > 1:
+            reason = 'Multiple zero clues'
+        elif any(mask & group == group for group in singleton_groups):
+            reason = 'Clue 1 blocked'
+        else:
+            size = mask.bit_count()
+            for number, star in positive_stars:
+                if number >= size:
+                    break
+                if mask & star == star:
+                    # A positive clue is not a capitol. Every first step stays
+                    # in this state and costs its final area, already > clue.
+                    reason = 'Enclosed positive clue'
+                    break
+        if reason is not None:
+            branch_prunes[reason] += 1
+            return False
+        return True
+
     def fail(kind,detail): return kind,detail,None
 
     def assess(mask):
@@ -127,7 +159,7 @@ def search_candidates(state, row, col, max_area=7, time_limit=8.0, node_limit=10
     if strategy=='symmetry_orbits':
         from symmetric_shapes import symmetric_masks, connected
         seen=set();by_area=Counter();accepted_area=Counter()
-        for mask in symmetric_masks(root,limit):
+        for mask in symmetric_masks(root,limit,can_extend):
             generated+=1
             if generated>node_limit or time.monotonic()>=deadline:
                 truncated=True;break
@@ -196,6 +228,7 @@ def search_candidates(state, row, col, max_area=7, time_limit=8.0, node_limit=10
             'respect_paint':respect_paint, 'paint_required_cells':[list(divmod(i,SIZE)) for i in sorted(required_paint)] if respect_paint else [],
             'conditional_common_cells':common if within_complete and (not exhaustive or respect_paint) and total else [],
             'rejections':dict(counts),'rejection_examples':examples,'levels':levels,
+            'branch_prunes':dict(branch_prunes),
             'elapsed_seconds':round(time.monotonic()-started,3), 'strategy':strategy,
             'generated':generated, 'max_examined_area':max_examined_area,
             'max_survivor_area':max((c['area'] for c in survivors),default=0),

@@ -19,7 +19,7 @@ def connected(mask):
         reached |= front
     return reached==mask
 
-def orbit_walk(root, max_area, transform):
+def orbit_walk(root, max_area, transform, can_extend=None):
     """Connected quotient-graph subsets. Actual cell connectivity checked later.
 
     The starting orbit can be two disconnected cells. Do NOT require intermediate
@@ -39,6 +39,11 @@ def orbit_walk(root, max_area, transform):
     while stack:
         mask=stack.pop()
         yield mask
+        # Yield even stopped branches so the caller can enforce time/node limits.
+        # Only hereditary failures belong here: ordinary candidate rejection may
+        # be repaired by adding cells (including symmetry and area failures).
+        if can_extend is not None and not can_extend(mask):
+            continue
         # All orbit extensions are symmetric. Quotient connectivity is enough
         # for generation, but a disconnected final set is never a candidate.
         border=0
@@ -49,7 +54,7 @@ def orbit_walk(root, max_area, transform):
             if child.bit_count()<=max_area and child not in seen:
                 seen.add(child);stack.append(child)
 
-def symmetric_masks(root,max_area):
+def symmetric_masks(root,max_area,can_extend=None):
     """Round-robin DFS across axes/centers; visits large shapes early.
 
     Duplicates across symmetry families are deliberately left to the caller.
@@ -64,7 +69,7 @@ def symmetric_masks(root,max_area):
     for kr in range(2*SIZE-1):
         for kc in range(2*SIZE-1):
             transforms.append(lambda r,c,kr=kr,kc=kc:(kr-r,kc-c))
-    walkers=deque(orbit_walk(root,max_area,t) for t in transforms)
+    walkers=deque(orbit_walk(root,max_area,t,can_extend) for t in transforms)
     while walkers:
         walker=walkers.popleft()
         try:
