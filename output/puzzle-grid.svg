@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800" viewBox="0 0 800 800">
+<rect width="800" height="800" fill="white"/>
+<g stroke="black" fill="none">
+<rect x="50" y="50" width="700" height="700" stroke-width="5"/>
+<path d="M 190 50 V 750 M 50 190 H 750" stroke-width="2"/>
+<path d="M 330 50 V 750 M 50 330 H 750" stroke-width="2"/>
+<path d="M 470 50 V 750 M 50 470 H 750" stroke-width="2"/>
+<path d="M 610 50 V 750 M 50 610 H 750" stroke-width="2"/>
+</g>
+<g font-family="Arial, Helvetica, sans-serif" font-size="56" fill="black" text-anchor="middle" dominant-baseline="central">
+<text x="120" y="120">12</text>
+<text x="680" y="120">17</text>
+<text x="120" y="260">8</text>
+<text x="400" y="260">6</text>
+<text x="540" y="260">3</text>
+<text x="260" y="540">7</text>
+<text x="400" y="540">6</text>
+<text x="680" y="540">10</text>
+<text x="120" y="680">25</text>
+<text x="680" y="680">0</text>
+</g></svg>

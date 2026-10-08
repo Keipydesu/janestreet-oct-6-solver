@@ -1,14 +1,17 @@
 """Bounded, complete-by-size enumeration of connected states containing a square.
-No paint or manual capital markers are assumed correct. No external dependencies.
+Paint and manual capital markers are optional assumptions. No external dependencies.
 """
 from collections import Counter, deque
 import heapq
 import time
 from model import SIZE
 
-NEIGHBORS = {r*SIZE+c: tuple(rr*SIZE+cc for rr,cc in ((r-1,c),(r+1,c),(r,c-1),(r,c+1))
-                           if 0 <= rr < SIZE and 0 <= cc < SIZE)
-             for r in range(SIZE) for c in range(SIZE)}
+def neighbors_for_size(size):
+    return {r*size+c: tuple(rr*size+cc for rr,cc in ((r-1,c),(r+1,c),(r,c-1),(r,c+1))
+                           if 0 <= rr < size and 0 <= cc < size)
+            for r in range(size) for c in range(size)}
+
+NEIGHBORS = neighbors_for_size(SIZE)
 
 def indices(mask):
     while mask:
@@ -16,15 +19,34 @@ def indices(mask):
         yield bit.bit_length()-1
         mask ^= bit
 
-def coordinates(mask):
-    return [list(divmod(i,SIZE)) for i in indices(mask)]
+def coordinates(mask, size=SIZE):
+    return [list(divmod(i,size)) for i in indices(mask)]
 
-def search_candidates(state, row, col, max_area=7, time_limit=8.0, node_limit=100000, strategy=None, respect_paint=False, preview_limit=150):
+def search_candidates(state, row, col, max_area=7, time_limit=8.0, node_limit=100000, strategy=None, respect_paint=False, preview_limit=150, check_borders=False, respect_stars=False):
+    SIZE = state.size
+    NEIGHBORS = neighbors_for_size(SIZE)
+    def coordinates(mask):
+        return [list(divmod(i, SIZE)) for i in indices(mask)]
     if any(type(v) is not int or not 0 <= v < SIZE for v in (row,col)):
         raise ValueError('Select a square inside the grid.')
     if type(max_area) is not int or not 1 <= max_area <= SIZE*SIZE:
-        raise ValueError('Choose a maximum candidate area from 1 to 121.')
+        raise ValueError(f'Choose a maximum candidate area from 1 to {SIZE*SIZE}.')
     if type(respect_paint) is not bool: raise ValueError('Paint constraint must be true or false.')
+    if type(check_borders) is not bool: raise ValueError('Border check must be true or false.')
+    if type(respect_stars) is not bool: raise ValueError('Manual star constraint must be true or false.')
+    # A marked capital is equivalent to a zero-cost clue, but only on a copy:
+    # preserve the user's clues, paint, and history. Unmarked cells may still be capitals.
+    if respect_stars:
+        from model import GridState
+        state = GridState.from_dict(state.to_dict())
+        for r, cells in enumerate(state.grid):
+            for c, cell in enumerate(cells):
+                if cell.is_capital:
+                    if cell.starting_number not in (None, 0):
+                        raise ValueError(f'Manual star at R{r+1} C{c+1} conflicts with its nonzero clue.')
+                    cell.starting_number = 0
+                    cell.capital_required = True
+    conditional = respect_paint or respect_stars
     source_color=state.grid[row][col].region_color
     if respect_paint and source_color is None: raise ValueError('Paint the source square before using paint constraints.')
     painted_components=[(region['color'],{r*SIZE+c for r,c in region['cells']}) for region in state.connected_regions()]
@@ -79,6 +101,48 @@ def search_candidates(state, row, col, max_area=7, time_limit=8.0, node_limit=10
             branch_prunes[reason] += 1
             return False
         return True
+
+    border_checks = 0
+    border_grid = None
+    if check_borders:
+        from model import GridState
+        border_grid = GridState.from_dict(state.to_dict())
+        for rr in border_grid.grid:
+            for cell in rr:
+                # Only this candidate has final borders. All other paint is
+                # a partial footprint: its eventual area and symmetry may change.
+                # Membership/color constraints are enforced separately in assess().
+                cell.region_color = None
+                cell.is_capital = cell.capital_required
+        used_colors = {cell.region_color for rr in border_grid.grid for cell in rr}
+        color_number = 0
+        while '#%06x'%color_number in used_colors:
+            color_number += 1
+        overlay_color = '#%06x'%color_number
+
+    def border_failure(cells):
+        nonlocal border_checks
+        border_checks += 1
+        previous = []
+        try:
+            for i in cells:
+                rr,cc = divmod(i,SIZE)
+                cell = border_grid.grid[rr][cc]
+                previous.append((cell,cell.region_color))
+                cell.region_color = overlay_color
+            checked = border_grid.validate_partial()
+            for number in checked['checks']:
+                if number['status']=='contradiction':
+                    rr,cc = number['cell']
+                    return f"R{rr+1} C{cc+1}: " + ' '.join(number['reasons'])
+            for region in checked['regions']:
+                if region['issues']:
+                    rr,cc = region['cells'][0]
+                    return f"Painted state at R{rr+1} C{cc+1}: " + ' '.join(region['issues'])
+            return None
+        finally:
+            for cell,color in previous:
+                cell.region_color = color
 
     def fail(kind,detail): return kind,detail,None
 
@@ -153,19 +217,23 @@ def search_candidates(state, row, col, max_area=7, time_limit=8.0, node_limit=10
             for target in inside:
                 if abs(clues[source]-clues[target])>size*distance[target]:
                     return fail('Clue distance difference','Two clues in this state differ by more than the cost of an internal path between them.')
+        if check_borders:
+            failure = border_failure(cells)
+            if failure:
+                return fail('Border check',failure)
         return None,None,{'cells':coordinates(mask),'area':size,'capitol':None if cap is None else list(divmod(cap,SIZE)),
                           'rotations':symmetry['rotations'],'reflections':symmetry['reflections']}
 
     if strategy=='symmetry_orbits':
         from symmetric_shapes import symmetric_masks, connected
         seen=set();by_area=Counter();accepted_area=Counter()
-        for mask in symmetric_masks(root,limit,can_extend):
+        for mask in symmetric_masks(root,limit,can_extend,size=SIZE):
             generated+=1
             if generated>node_limit or time.monotonic()>=deadline:
                 truncated=True;break
             if mask in seen:continue
             seen.add(mask)
-            if not connected(mask):continue
+            if not connected(mask,size=SIZE):continue
             examined+=1;size=mask.bit_count();max_examined_area=max(max_examined_area,size)
             by_area[size]+=1
             reason,detail,candidate=assess(mask)
@@ -224,17 +292,20 @@ def search_candidates(state, row, col, max_area=7, time_limit=8.0, node_limit=10
             'completed_through_area':completed_area,'complete_within_limit':within_complete,
             'exhaustive':exhaustive,'truncated':truncated,'examined':examined,'survivor_count':total,
             'survivors':survivors if preview_limit is None else survivors[:preview_limit],'preview_limited':preview_limit is not None and total>preview_limit,'common_cells':common,'possible_cells':coordinates(union),
-            'forced_cells':common if exhaustive and total and not respect_paint else [],
+            'forced_cells':common if exhaustive and total and not conditional else [],
+            'respect_stars':respect_stars, 'conditional':conditional,
+            'paint_mode':'partial' if respect_paint else 'ignored',
             'respect_paint':respect_paint, 'paint_required_cells':[list(divmod(i,SIZE)) for i in sorted(required_paint)] if respect_paint else [],
-            'conditional_common_cells':common if within_complete and (not exhaustive or respect_paint) and total else [],
+            'conditional_common_cells':common if within_complete and (not exhaustive or conditional) and total else [],
             'rejections':dict(counts),'rejection_examples':examples,'levels':levels,
             'branch_prunes':dict(branch_prunes),
+            'border_check_enabled':check_borders,'border_checks':border_checks,
             'elapsed_seconds':round(time.monotonic()-started,3), 'strategy':strategy,
             'generated':generated, 'max_examined_area':max_examined_area,
             'max_survivor_area':max((c['area'] for c in survivors),default=0),
             'frequency':[[frequency[r*SIZE+c]/total if total else 0 for c in range(SIZE)] for r in range(SIZE)],
-            'scope':('CONDITIONAL ON PAINT: source component must be included; other colors excluded; connected painted groups kept intact. ' if respect_paint else 'Clues only; painted states and manual markers ignored. ')+'Survivors are locally compatible, not proven global solutions.',
-            'conclusion':('Assuming the painted constraints: ' if respect_paint else '')+('No state satisfies these rules.' if exhaustive and not total else
-                          ('Exhaustive under painted assumptions; common cells are conditional.' if respect_paint else 'Exhaustive for this square; common cells are forced.') if exhaustive else
+            'scope':('CONDITIONAL ON PAINT: source component must be included; other colors excluded; connected painted groups kept intact. ' if respect_paint else 'Paint ignored. ')+('Manual stars required as capitals. ' if respect_stars else 'Manual stars ignored. ')+('Only the candidate has final borders in the border check; outside squares use optimistic cost 1. Other painted groups can grow and change symmetry or capitol. ' if check_borders else '')+'Survivors are locally compatible, not proven global solutions.',
+            'conclusion':('Assuming the selected constraints: ' if conditional else '')+('No state satisfies these rules.' if exhaustive and not total else
+                          ('Exhaustive under selected assumptions; common cells are conditional.' if conditional else 'Exhaustive for this square; common cells are forced.') if exhaustive else
                           'Search interrupted; common cells are observational only.' if truncated else
                           f'Complete only through area {limit}. Common cells are conditional on this area limit; larger states remain possible.')}

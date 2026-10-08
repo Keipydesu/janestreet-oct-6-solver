@@ -15,9 +15,16 @@ CLUES = {
     (11, 2): 26, (11, 6): 0, (11, 9): 77, (11, 10): 61,
 }
 
-def new_workspace():
-    state = GridState()
-    for (row, col), value in CLUES.items():
+SMALL_CLUES = {
+    (1, 1): 12, (1, 5): 17,
+    (2, 1): 8, (2, 3): 6, (2, 4): 3,
+    (4, 2): 7, (4, 3): 6, (4, 5): 10,
+    (5, 1): 25, (5, 5): 0,
+}
+
+def new_workspace(size=11):
+    state = GridState(size)
+    for (row, col), value in (SMALL_CLUES if size == 5 else CLUES).items():
         cell = state.grid[row-1][col-1]
         cell.starting_number = value
         if value == 0:

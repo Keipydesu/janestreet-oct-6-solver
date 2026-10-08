@@ -6,7 +6,7 @@ from pathlib import Path
 import secrets
 import threading
 import webbrowser
-from model import Workspace
+from model import Workspace, GridState
 from starting_grid import new_workspace
 
 ROOT = Path(__file__).resolve().parent
@@ -14,6 +14,14 @@ ROOT = Path(__file__).resolve().parent
 def make_server(project, port=8000, workspace=None):
     project = Path(project)
     workspace = workspace if workspace is not None else (Workspace.load(project) if project.exists() else new_workspace())
+    projects = {'': project, '/small': project.with_name(project.stem + '-small' + project.suffix)}
+    workspaces = {'': workspace}
+    decompositions = {}
+    def get_workspace(prefix):
+        if prefix not in workspaces:
+            path = projects[prefix]
+            workspaces[prefix] = Workspace.load(path) if path.exists() else new_workspace(5)
+        return workspaces[prefix]
     token = secrets.token_urlsafe(32)
 
     class Handler(BaseHTTPRequestHandler):
@@ -36,14 +44,20 @@ def make_server(project, port=8000, workspace=None):
         def do_GET(self):
             if not self.allowed_host():
                 return self.respond(403, '{}')
-            if self.path == '/':
-                return self.respond(200, (ROOT / 'index.html').read_text().replace('__TOKEN__', token), 'text/html')
-            if self.path == '/api/state':
+            prefix = '/small' if self.path == '/small' or self.path.startswith('/small/') else ''
+            path = self.path[len(prefix):] or '/'
+            workspace = get_workspace(prefix)
+            if path == '/':
+                return self.respond(200, (ROOT / 'index.html').read_text().replace('__TOKEN__', token).replace('__SIZE__', str(workspace.saved.size)).replace('__AREA__', str(workspace.saved.size ** 2)).replace('__API_BASE__', prefix + '/api/'), 'text/html')
+            if path == '/api/state':
                 return self.respond(200, json.dumps(workspace.payload()))
             self.respond(404, '{}')
 
         def do_POST(self):
-            nonlocal workspace
+            prefix = '/small' if self.path.startswith('/small/') else ''
+            path = self.path[len(prefix):]
+            workspace = get_workspace(prefix)
+            project = projects[prefix]
             if not self.allowed_host() or self.headers.get('X-Grid-Token') != token:
                 return self.respond(403, json.dumps({'error': 'Invalid request token.'}))
             try:
@@ -51,17 +65,39 @@ def make_server(project, port=8000, workspace=None):
                 if not 0 < length < 100000:
                     raise ValueError('Invalid request size.')
                 data = json.loads(self.rfile.read(length))
-                if self.path == '/api/heatmap':
+                if path == '/api/decompose':
+                    from rust_solver import solve
+                    mode = data.get('mode', 'main')
+                    if mode not in ('main', 'experimental'):
+                        raise ValueError('Unknown grid mode.')
+                    grid = workspace.experimental if mode == 'experimental' else workspace.saved
+                    report = solve(grid, seconds=8, per_root_seconds=.08, checkpoint='auto')
+                    decompositions[prefix] = report
+                    return self.respond(200, json.dumps(report))
+                if path == '/api/apply-decomposition':
+                    report = decompositions.get(prefix, {})
+                    if report.get('status') != 'verified_solution':
+                        raise ValueError('Find a verified decomposition first.')
+                    workspace.experimental = GridState.from_dict(report['solution'])
+                    workspace.histories['experimental'].record(
+                        workspace.experimental.to_dict(), 'Verified whole-board decomposition')
+                    return self.respond(200, json.dumps(workspace.payload()))
+                if path == '/api/heatmap':
                     mode = data.get('mode', 'main')
                     if mode not in ('main', 'experimental'):
                         raise ValueError('Unknown grid mode.')
                     grid = workspace.experimental if mode == 'experimental' else workspace.saved
                     kind = data.get('kind', 'heatmap')
+                    if kind == 'statecounts':
+                        from state_counts import state_count_heatmap
+                        return self.respond(200, json.dumps(state_count_heatmap(grid, data.get('max_area'))))
                     if kind == 'candidates':
                         row, col = data['source']
-                        return self.respond(200, json.dumps(grid.candidate_states(row,col,data.get('max_area',7),respect_paint=data.get('respect_paint',False))))
+                        return self.respond(200, json.dumps(grid.candidate_states(row,col,data.get('max_area',7),respect_paint=data.get('respect_paint',False),respect_stars=data.get('respect_stars',False),check_borders=True)))
                     if kind == 'deductions':
                         return self.respond(200, json.dumps(grid.deductions()))
+                    if kind == 'partial':
+                        return self.respond(200, json.dumps(grid.validate_partial(include_paths=True)))
                     if kind == 'validation':
                         return self.respond(200, json.dumps(grid.validate_puzzle()))
                     if kind == 'allheat':
@@ -77,16 +113,17 @@ def make_server(project, port=8000, workspace=None):
                     return self.respond(200, json.dumps({'heatmap': heatmap, 'source': [row, col],
                         'budget': grid.grid[row][col].starting_number, 'use_region_sizes':weighted,
                         'uncolored_count':sum(cell.region_color is None for row in grid.grid for cell in row)}))
-                if self.path == '/api/edit':
+                if path == '/api/edit':
                     workspace.edit(data['layer'], data['cells'], data['value'], data.get('target'))
-                elif self.path == '/api/history':
+                elif path == '/api/history':
                     workspace.restore_history(data['layer'], data['index'])
-                elif self.path == '/api/reset-experiment':
+                elif path == '/api/reset-experiment':
                     workspace.reset_experiment()
-                elif self.path == '/api/save':
+                elif path == '/api/save':
                     workspace.save(project)
-                elif self.path == '/api/load':
+                elif path == '/api/load':
                     workspace = Workspace.load(project)
+                    workspaces[prefix] = workspace
                 else:
                     return self.respond(404, '{}')
                 self.respond(200, json.dumps(workspace.payload()))

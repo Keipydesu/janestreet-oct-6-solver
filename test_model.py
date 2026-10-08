@@ -261,16 +261,16 @@ class ModelTests(unittest.TestCase):
 
     def test_undo_isolation_and_branch(self):
         w = Workspace()
-        w.edit('starting', [[0,0]], 0)
-        w.edit('numbers', [[0,0]], 9)
+        w.edit('regions', [[0,0]], '#abcdef')
+        w.edit('starting', [[0,0]], 9)
         w.edit('capitals', [[0,0]], True)
-        w.restore_history('numbers', 0)
-        self.assertEqual(w.grid[0][0].starting_number, 0)
+        w.restore_history('starting', 0)
+        self.assertEqual(w.grid[0][0].region_color, '#abcdef')
         self.assertTrue(w.grid[0][0].is_capital)
-        self.assertIsNone(w.grid[0][0].user_number)
-        w.edit('numbers', [[0,0]], 4)
-        self.assertEqual(len(w.histories['numbers'].states), 2)
-        self.assertFalse(w.histories['numbers'].view()['can_redo'])
+        self.assertIsNone(w.grid[0][0].starting_number)
+        w.edit('starting', [[0,0]], 4)
+        self.assertEqual(len(w.histories['starting'].states), 2)
+        self.assertFalse(w.histories['starting'].view()['can_redo'])
 
     def test_experiment_save_load(self):
         w = Workspace()
@@ -377,7 +377,7 @@ class ModelTests(unittest.TestCase):
         w = Workspace()
         w.edit('regions', [[0,0],[0,1],[5,5]], '#abcdef')
         w.edit('capitals', [[0,0]], True)
-        w.edit('numbers', [[0,0]], 9)
+        w.edit('starting', [[0,0]], 9)
         regions = w.saved.region_symmetries()
         self.assertEqual([r['area'] for r in regions], [2,1])
         self.assertEqual(regions[0]['symmetry']['rotations'], [180])
@@ -386,17 +386,17 @@ class ModelTests(unittest.TestCase):
     def test_atomic_invalid_edit(self):
         w = Workspace()
         with self.assertRaises(ValueError):
-            w.edit('numbers', [[0,0],[12,0]], 3)
-        self.assertIsNone(w.grid[0][0].user_number)
+            w.edit('starting', [[0,0],[12,0]], 3)
+        self.assertIsNone(w.grid[0][0].starting_number)
         for v in (True, float('nan'), float('inf'), '2'):
             with self.assertRaises(ValueError):
-                w.edit('numbers', [[0,0]], v)
+                w.edit('starting', [[0,0]], v)
         with self.assertRaises(ValueError):
             w.edit('capitals', [[0,0]], 1)
 
     def test_math_and_empty(self):
         w = Workspace()
-        w.edit('numbers', [[1,1]], 2.5)
+        w.edit('starting', [[1,1]], 2.5)
         self.assertEqual(sum(map(sum, w.saved.numbers())), 2.5)
         self.assertEqual(w.saved.region_areas(), [[0]*11 for _ in range(11)])
 
@@ -437,6 +437,7 @@ class ServerTests(unittest.TestCase):
                 combined = post('heatmap', {'kind':'allheat'})
                 self.assertEqual(len(combined['sources']),33)
                 candidates = post('heatmap', {'kind':'candidates','source':[5,10],'max_area':7})
+                self.assertTrue(candidates['border_check_enabled'])
                 self.assertTrue(candidates['exhaustive'])
                 self.assertEqual(candidates['forced_cells'],[[5,10]])
                 deductions = post('heatmap', {'kind':'deductions'})

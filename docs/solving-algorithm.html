@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>How our puzzle solver works</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f2f3f1;color:#202520;font:17px/1.65 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:900px;margin:36px auto;padding:52px 64px;background:white}h1,h2,h3{color:#000;line-height:1.2;break-after:avoid}h1{font-size:36px;margin:0 0 14px}h2{font-size:25px;margin:38px 0 14px}h3{font-size:19px;margin:24px 0 10px}p{margin:12px 0}a{color:#23593d}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.88em}pre{white-space:pre-wrap;line-height:1.6;padding:12px 0}li{margin:7px 0}table{border-collapse:collapse;width:100%;margin:18px 0;font-size:15px}th,td{border:1px solid #d9d9d9;padding:11px 13px;text-align:left;vertical-align:middle}th{background:#e5eaf0;color:#000}tr{break-inside:avoid}.meta{font-size:14px;color:#586258}.equation{font-family:Georgia,serif;font-size:20px;text-align:center;margin:22px 0}.flow{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:24px 0;font-size:15px;font-weight:600}.flow span{padding:7px 0}.flow b{color:#657366}nav{font-size:15px;margin:25px 0}nav a{display:inline-block;margin-right:15px}button{font:inherit;font-size:14px;padding:8px 14px;background:white;border:1px solid #bbb;border-radius:5px;cursor:pointer;float:right}@media(max-width:650px){main{margin:0;padding:28px 22px}h1{font-size:29px}table{font-size:13px}th,td{padding:7px}}@page{size:letter;margin:.7in}@media print{body{background:white;font-size:10.5pt;line-height:1.45}main{padding:0;margin:0;max-width:none}button,nav{display:none}h1{font-size:26pt}h2{font-size:17pt;margin-top:24px}h3{font-size:12pt}table{font-size:9pt}p{orphans:3;widows:3}a{color:inherit;text-decoration:none}.flow{font-size:10pt}.equation{font-size:13pt}}
+</style></head><body><main>
+<button onclick="window.print()">Print or save as PDF</button>
+<p class="meta">Grid Studio • Implementation guide • 7 October 2026</p>
+<h1>How our puzzle solver works</h1>
+<p>Our current <strong>Decompose board</strong> tool searches for a partition of the board into connected, symmetric states, then verifies that the partition reproduces every numbered clue. It combines shape enumeration, exact-cover backtracking, and weighted shortest-path bounds.</p>
+<p>This guide explains the algorithm used by the editor on both the 5 × 5 and 11 × 11 boards. It includes mathematical examples without revealing the smaller puzzle’s solution. A verified result establishes a valid solution under the implemented rules; a search that runs out of time does not establish impossibility or uniqueness.</p>
+<nav aria-label="Contents"><a href="#model">The model</a><a href="#candidates">Candidate states</a><a href="#cover">Whole-board search</a><a href="#verification">Verification</a><a href="#code">Code map</a></nav>
+<div class="flow" aria-label="Algorithm flow"><span>Committed clues</span><b>→</b><span>Area bounds</span><b>→</b><span>Candidate states</span><b>→</b><span>Exact cover</span><b>→</b><span>Verified partition</span></div>
+<h2 id="model">The mathematical model</h2>
+<p>A <strong>state</strong> is a connected group of squares, using edge adjacency. Every board square must belong to exactly one state. Its area is its number of squares. Each state must have at least one nonidentity symmetry: a reflection or a rotation that maps its cells onto themselves.</p>
+<p>The code tests all seven nonidentity square-grid transformations: rotations through 90, 180, and 270 degrees, and horizontal, vertical, and two diagonal reflections. Transformed shapes are translated to a common origin before comparison.</p>
+<p>A state has a <strong>capitol</strong> only if every symmetry that the shape possesses fixes exactly one square, and that square is the same for all of those symmetries. “Fixed” means the whole square maps to itself. A symmetric state may have no capitol. A singleton is its own capitol.</p>
+<h3>Movement and numbered clues</h3>
+<p>Let A(u) be the area of the state containing square u. For adjacent squares u and v, the movement cost is:</p>
+<p class="equation">w(u, v) = min(A(u), A(v))</p>
+<p>A step within one state therefore costs that state’s area. Crossing a boundary costs the smaller of the two state areas. A clue at square u specifies the minimum total movement cost from u to <em>any</em> capitol, not necessarily one in its own state. Denote that distance by d(u).</p>
+<p>For example, crossing between states of areas 7 and 3 costs 3. A route with two such crossings costs 6. A longer route can be cheaper than a shorter one, so counting steps alone is insufficient. The solver uses Dijkstra’s algorithm with these positive edge weights.</p>
+<h2>Clue deductions before shape search</h2>
+<p>The editor’s solver calls <code>GridState.deductions()</code> to derive necessary conditions. These reduce the number of shapes worth considering:</p>
+<ul>
+<li>A positive clue cannot be a singleton because a singleton’s distance to a capitol is zero.</li>
+<li>A zero clue must be a capitol. Its state has odd area, but need not have area one.</li>
+<li>A clue of 1 must have a neighboring singleton capitol. Other clues and area bounds can eliminate neighbors until one is forced.</li>
+<li>Adjacent clue values constrain both endpoint state areas.</li>
+</ul>
+<p>The last rule follows from the shortest-path inequality:</p>
+<p class="equation">|d(u) − d(v)| ≤ w(u, v) = min(A(u), A(v))</p>
+<p>In the smaller puzzle, R1C1 = 12 and R2C1 = 8 differ by 4. Both squares must therefore belong to states of area at least 4. This does not establish whether they belong to the same state.</p>
+<p>The rule engine also propagates bounds near forced singletons and rounds a zero-clue state’s area lower bound up to an odd number. Invalid clues or detected contradictions stop the search.</p>
+<h2 id="candidates">Generating candidate states</h2>
+<p>A candidate is a connected symmetric shape containing a selected root square, together with its area and its derived capitol, if any. The whole-board solver generates candidates around multiple roots and deduplicates shapes into one shared pool.</p>
+<h3>Build symmetry into the enumeration</h3>
+<p>The default generator uses reflections and half-turns. Under one such transformation, a square either maps to itself or pairs with another square. These one- or two-square groups are called <em>orbits</em>. Adding complete orbits preserves the chosen symmetry automatically.</p>
+<p>The generator grows sets of orbits, cycling among axes and centers so one family does not consume the entire budget. It permits intermediate sets whose actual squares are disconnected, because later additions can connect them. Actual connectivity is checked before a shape is assessed as a candidate. Quarter-turn-symmetric shapes are covered because they also have half-turn symmetry.</p>
+<h3>Reject shapes that cannot work</h3>
+<p>Each candidate must respect the derived area bounds, required singleton squares, zero clues, and capitol geometry. It cannot place a positive clue at its capitol. Local path bounds also reject shapes whose internal travel or exits would force a clue distance to be too high or too low.</p>
+<p>The generator distinguishes rejecting a shape from stopping its entire growth branch. Only failures that persist under every enlargement justify stopping growth. Examples include absorbing a forced singleton into a larger state, containing two zero clues, or enclosing a positive clue so every first step already costs more than the clue permits.</p>
+<p>The standalone candidate tool optionally respects painted regions. <strong>Whole-board decomposition ignores paint</strong> and searches from committed clues. Geometrically required capitol flags are still checked when a completed result is validated.</p>
+<h2 id="cover">Combining states into an exact cover</h2>
+<p>For each candidate state S, imagine a binary variable x<sub>S</sub>: one means we select it and zero means we do not. For every board cell c, we require:</p>
+<p class="equation">∑<sub>S containing c</sub> x<sub>S</sub> = 1</p>
+<p>This is the exact-cover condition. It enforces complete coverage without overlaps. It does not by itself enforce the numbered distances, so the solver adds travel checks during the search.</p>
+<p>The implementation represents a shape as an integer bit mask, with one bit per board cell. Bit operations make intersection and coverage checks inexpensive. Recursive backtracking proceeds as follows:</p>
+<ol>
+<li>For every uncovered cell, list the candidates that do not overlap states already chosen.</li>
+<li>If any cell has no candidate, reject this branch.</li>
+<li>Run the global area and travel bounds described below.</li>
+<li>Choose the uncovered cell with the fewest distinct remaining state areas, then the smallest maximum area, then the fewest candidate shapes.</li>
+<li>Try each of its candidates, smaller areas first, then recurse. Undo that choice when the branch fails.</li>
+<li>When all cells are covered, independently validate the resulting board.</li>
+</ol>
+<p>The search stops at the first verified solution. It does not enumerate every solution.</p>
+<h3>Global travel bounds prune partial partitions</h3>
+<p>For each cell, remaining candidates give lower and upper bounds on its eventual state area. A chosen state fixes those areas exactly. The solver also tracks squares that must be capitols and squares that could still become capitols.</p>
+<p>With maximum possible areas, it computes generous route costs from clues and certain capitols. A known route that is already cheaper than a clue rules out the branch. For instance, if a clue is 12 but even the upper bound on a route to a mandatory capitol is 10, the true minimum distance cannot be 12.</p>
+<p>It also propagates clue-derived lower bounds on distances to exclude impossible capitol locations. Finally, using minimum possible areas and all remaining possible capitols, it computes an optimistic nearest-capitol distance. If even that optimistic distance exceeds a required upper bound, no completion of this branch can work.</p>
+<p>Before choosing a branch, the solver checks each remaining candidate against these distance intervals. Every non-capitol square must admit a neighbor with <code>d(square) = d(neighbor) + movement cost</code>. Internal movement costs the candidate’s exact area; external costs use the remaining area bounds. The candidate’s capitol must admit distance zero. For example, a positive clue surrounded by neighbors of equal or greater distance has no descending step and is impossible.</p>
+<p>Rejected candidates are removed from all cell domains. Up to three rounds of filtering and recalculating bounds run at each search node; the limit controls work, and does not turn surviving candidates into proven feasible states.</p>
+<p>These bounds are necessary conditions. They can leave impossible branches alive, but they are designed not to discard a completion represented by the current candidate pool. Bounds derived from a sampled pool apply only to completions using that pool.</p>
+<p>Failed partial decompositions are cached by the occupied cells’ areas and the derived capitol locations. Different borders between equal-area states share a cache entry only when both agree. Actual symmetric states are still retained for final validation. The cache is cleared whenever the candidate pool grows. Initial clue-based forbidden capitol locations also filter candidates before they enter the pool; these exclusions use the full configured area limit, not an early generation stage.</p>
+<h2>Time limits and expanding the candidate pool</h2>
+<p>The editor gives the solve call an eight-second budget and starts with about 0.08 seconds of generation per root. The maximum searched state area is 98 cells, capped at the board area (25 cells on the smaller puzzle). Generation starts with areas up to 4, prioritizing forced singletons and roots with fewer clue-compatible areas; roots requiring larger states wait for expansion. At most half the total budget is allocated to the initial generation pass.</p>
+<p>If exact cover fails on the initial pool, the solver uses remaining time to expand it. It prioritizes smaller next area limits and fewer clue-compatible areas, then less-explored roots and coverage failures. Each root’s area limit grows roughly by doubling, up to the configured maximum, and the generation budget grows too. Search restarts when new shapes arrive. Earlier pool-based rejections cannot be carried over unchanged to a larger pool.</p>
+<p>The generator has both time and node limits. Its symmetry construction is intended to cover the shape families in a completed enumeration, but a bounded run may examine only part of them. Repeating a short run can revisit the same deterministic search prefix; it is not a guarantee of cumulative progress.</p>
+<h2 id="verification">Independent verification and result meanings</h2>
+<p>For a complete partition, <code>materialize()</code> builds a fresh colored board. <code>validate_puzzle()</code> then reconstructs connected regions, checks their symmetry and required capitols, derives the actual capitol set, recomputes weighted shortest paths, and compares every clue with its actual distance.</p>
+<p>This final check is separate from the search’s pruning decisions, although both use the project’s common geometry and movement rules. It is a validation against our implemented model, not an independent formal proof of that model.</p>
+<table><thead><tr><th>Returned status</th><th>What it establishes</th></tr></thead><tbody>
+<tr><td><code>verified_solution</code></td><td>A full partition passed validation. Uniqueness was not checked.</td></tr>
+<tr><td><code>time_limit</code></td><td>The allotted search time ended. A solution may still exist.</td></tr>
+<tr><td><code>sample_exhausted</code></td><td>No solution was found in the explored pool. The current solver does not return this as a global impossibility proof.</td></tr>
+<tr><td><code>area_limit_contradiction</code></td><td>A clue cannot be reached under the supplied maximum-area cap. This rejects that cap, not necessarily the puzzle.</td></tr>
+</tbody></table>
+<p>The editor keeps a verified result behind <strong>Reveal verified decomposition</strong>. Searching and revealing the preview do not edit the painted board or save it to disk.</p>
+<h2 id="code">Where the algorithm lives</h2>
+<table><thead><tr><th>File</th><th>Responsibility</th></tr></thead><tbody>
+<tr><td><code>app.py</code></td><td>Routes the editor request to the eight-second solve and returns the result for preview.</td></tr>
+<tr><td><code>solver.py</code></td><td>Candidate pooling, exact-cover recursion, global travel bounds, pool expansion, and final validation.</td></tr>
+<tr><td><code>candidate_search.py</code></td><td>Candidate checks, local distance bounds, and bounded generation accounting.</td></tr>
+<tr><td><code>symmetric_shapes.py</code></td><td>Orbit-based symmetric shape generation and connectivity checks.</td></tr>
+<tr><td><code>model.py</code></td><td>Clue deductions, symmetry and capitol rules, weighted distances, and board validation.</td></tr>
+<tr><td><code>index.html</code></td><td>Search controls, candidate heatmaps, live border checks, and the hidden result preview.</td></tr>
+</tbody></table>
+<h3>Separate experimental solvers</h3>
+<p>The repository also contains <code>deduction_engine.py</code>, a stronger area-domain propagation engine, and <code>area_solver.py</code>, an experimental area-first constraint solver. These are separate command-line paths built around the original board size. The editor’s current decomposition button calls <code>solver.solve()</code>; it does not invoke either of those alternative engines.</p>
+<h3>Evidence from the smaller board</h3>
+<p>During development, one 5 × 5 run found a verified solution in approximately 2.02 seconds, using 1,873 candidate states and 72 exact-cover search nodes. None of its root enumerations was marked complete. That illustrates why finding and verifying a solution can succeed without enumerating every possible state. Those measurements describe one run, not a performance guarantee.</p>
+<p>At the end of the decomposition change, 76 tests passed. They included independent validation of a small-board solution, timeout semantics, route isolation, and undoing the Experimental replacement. Source references throughout this document describe the local implementation as of 7 October 2026.</p>
+</main></body></html>

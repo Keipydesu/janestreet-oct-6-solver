@@ -7,35 +7,38 @@ import re
 from pathlib import Path
 
 SIZE = 11
-FIELDS = ('starting_number', 'region_color', 'user_number', 'is_capital', 'capital_required')
-LAYERS = dict(starting='starting_number', regions='region_color', numbers='user_number', capitals='is_capital')
+FIELDS = ('starting_number', 'region_color', 'is_capital', 'capital_required')
+LAYERS = dict(starting='starting_number', regions='region_color', capitals='is_capital')
 
 @dataclass
 class Cell:
     starting_number: int | float | None = None
     region_color: str | None = None
-    user_number: int | float | None = None
     is_capital: bool = False
     capital_required: bool = False
 
 class GridState:
-    def __init__(self):
-        self.grid = [[Cell() for _ in range(SIZE)] for _ in range(SIZE)]
+    def __init__(self, size=SIZE):
+        if type(size) is not int or not 1 <= size <= SIZE:
+            raise ValueError("Grid size must be between 1 and 11.")
+        self.size = size
+        self.grid = [[Cell() for _ in range(self.size)] for _ in range(self.size)]
 
     def to_dict(self):
         return [[asdict(cell) for cell in row] for row in self.grid]
 
     @classmethod
     def from_dict(cls, data):
-        if not isinstance(data, list) or len(data) != SIZE:
-            raise ValueError('Expected 11 rows.')
-        state = cls()
+        if not isinstance(data, list) or not 1 <= len(data) <= SIZE:
+            raise ValueError('Expected between 1 and 11 rows.')
+        state = cls(len(data))
         for r, row in enumerate(data):
-            if not isinstance(row, list) or len(row) != SIZE:
-                raise ValueError('Expected 11 cells per row.')
+            if not isinstance(row, list) or len(row) != state.size:
+                raise ValueError('Expected a square grid.')
             for c, cell in enumerate(row):
                 if isinstance(cell, dict):
                     cell = dict(cell)
+                    cell.pop('user_number', None)  # Retired notes from version-1 saves.
                     cell.setdefault('capital_required', False)
                 if not isinstance(cell, dict) or set(cell) != set(FIELDS):
                     raise ValueError('Invalid cell fields.')
@@ -49,8 +52,8 @@ class GridState:
     def connected_regions(self):
         """Same-color components with edge adjacency; diagonal contact doesn't count."""
         seen, regions = set(), []
-        for r in range(SIZE):
-            for c in range(SIZE):
+        for r in range(self.size):
+            for c in range(self.size):
                 color = self.grid[r][c].region_color
                 if color is None or (r, c) in seen:
                     continue
@@ -60,7 +63,7 @@ class GridState:
                     rr, cc = queue.popleft()
                     cells.append((rr, cc))
                     for nr, nc in ((rr-1, cc), (rr+1, cc), (rr, cc-1), (rr, cc+1)):
-                        if 0 <= nr < SIZE and 0 <= nc < SIZE and (nr, nc) not in seen and self.grid[nr][nc].region_color == color:
+                        if 0 <= nr < self.size and 0 <= nc < self.size and (nr, nc) not in seen and self.grid[nr][nc].region_color == color:
                             seen.add((nr, nc))
                             queue.append((nr, nc))
                 regions.append({'color': color, 'area': len(cells), 'cells': cells})
@@ -139,7 +142,7 @@ class GridState:
         Manual markers are checked separately from geometrically derived truth.
         """
         regions = []
-        heatmap = [[None for _ in range(SIZE)] for _ in range(SIZE)]
+        heatmap = [[None for _ in range(self.size)] for _ in range(self.size)]
         for region in self.connected_regions():
             symmetry = self.shape_symmetry(region['cells'])
             operations = symmetry['operations']
@@ -187,15 +190,15 @@ class GridState:
         return report
 
     def region_areas(self):
-        """11×11 numeric array; blank cells have area zero."""
-        result = [[0] * SIZE for _ in range(SIZE)]
+        """Board-sized numeric array; blank cells have area zero."""
+        result = [[0] * self.size for _ in range(self.size)]
         for region in self.connected_regions():
             for r, c in region['cells']:
                 result[r][c] = region['area']
         return result
 
     def movement_heatmap(self, row, col, within_region=False):
-        """Independent 11×11 array of maximum remaining movement budget.
+        """Independent board-sized array of maximum remaining movement budget.
 
         Each orthogonal step costs one. None means unreachable; zero means
         reachable with no budget left. The source costs zero. Uses shortest
@@ -203,7 +206,7 @@ class GridState:
         Optional region restriction uses edge-connected cells of the source
         color, and rejects an uncolored source. Other clues are not obstacles.
         """
-        if any(type(x) is not int or not 0 <= x < SIZE for x in (row, col)):
+        if any(type(x) is not int or not 0 <= x < self.size for x in (row, col)):
             raise ValueError('Invalid source coordinate.')
         if type(within_region) is not bool:
             raise ValueError('Region restriction must be true or false.')
@@ -213,7 +216,7 @@ class GridState:
             raise ValueError('Select a starting clue with a nonnegative value.')
         if within_region and source.region_color is None:
             raise ValueError('Color the source region before restricting movement to it.')
-        heatmap = [[None for _ in range(SIZE)] for _ in range(SIZE)]
+        heatmap = [[None for _ in range(self.size)] for _ in range(self.size)]
         heatmap[row][col] = budget
         queue = deque([(row, col)])
         while queue:
@@ -222,7 +225,7 @@ class GridState:
             if remaining < 0:
                 continue
             for nr, nc in ((r-1,c), (r+1,c), (r,c-1), (r,c+1)):
-                if not (0 <= nr < SIZE and 0 <= nc < SIZE) or heatmap[nr][nc] is not None:
+                if not (0 <= nr < self.size and 0 <= nc < self.size) or heatmap[nr][nc] is not None:
                     continue
                 if within_region and self.grid[nr][nc].region_color != source.region_color:
                     continue
@@ -238,7 +241,7 @@ class GridState:
         components are retained and expanded, not proof of valid puzzle routes.
         """
         import heapq
-        if any(type(x) is not int or not 0 <= x < SIZE for x in (row,col)):
+        if any(type(x) is not int or not 0 <= x < self.size for x in (row,col)):
             raise ValueError('Invalid source coordinate.')
         budget=self.grid[row][col].starting_number
         if budget is None or budget < 0:
@@ -249,7 +252,7 @@ class GridState:
         if within_region and source_color is None:
             raise ValueError('Color the source region before restricting movement to it.')
         sizes=self.region_areas()
-        result=[[None for _ in range(SIZE)] for _ in range(SIZE)]
+        result=[[None for _ in range(self.size)] for _ in range(self.size)]
         result[row][col]=budget
         queue=[(-budget,row,col)]
         while queue:
@@ -257,7 +260,7 @@ class GridState:
             remaining=-negative
             if result[r][c] != remaining: continue
             for nr,nc in ((r-1,c),(r+1,c),(r,c-1),(r,c+1)):
-                if not (0 <= nr < SIZE and 0 <= nc < SIZE): continue
+                if not (0 <= nr < self.size and 0 <= nc < self.size): continue
                 if within_region and self.grid[nr][nc].region_color != source_color: continue
                 # Same-state endpoints have identical areas, so min handles both rules.
                 cost=min(sizes[r][c] or 1,sizes[nr][nc] or 1)
@@ -275,14 +278,14 @@ class GridState:
         """
         def neighbors(r,c):
             return [(rr,cc) for rr,cc in ((r-1,c),(r+1,c),(r,c-1),(r,c+1))
-                    if 0 <= rr < SIZE and 0 <= cc < SIZE]
+                    if 0 <= rr < self.size and 0 <= cc < self.size]
         def label(r,c): return f'R{r+1} C{c+1}'
-        notes=[[[] for _ in range(SIZE)] for _ in range(SIZE)]
-        bounds=[[1 for _ in range(SIZE)] for _ in range(SIZE)]
+        notes=[[[] for _ in range(self.size)] for _ in range(self.size)]
+        bounds=[[1 for _ in range(self.size)] for _ in range(self.size)]
         clues={(r,c):cell.starting_number for r,row in enumerate(self.grid) for c,cell in enumerate(row) if cell.starting_number is not None}
         invalid=[{'cell':list(p),'reason':'Travel-cost clues must be nonnegative integers.'} for p,n in clues.items() if n < 0 or n != int(n)]
         if invalid:
-            return {'heatmap':[[None]*SIZE for _ in range(SIZE)],'notes':notes,'minimum_state_sizes':bounds,
+            return {'heatmap':[[None]*self.size for _ in range(self.size)],'notes':notes,'minimum_state_sizes':bounds,
                     'one_clues':[],'forced_singletons':[],'candidate_singletons':[],'required_capitals':[],
                     'contradictions':invalid,'available':False}
         def bound(p,value,reason):
@@ -301,8 +304,8 @@ class GridState:
                     for p0 in ((r,c),q):
                         bound(p0,delta,f'Adjacent clues at {label(r,c)} and {label(*q)} differ by {int(delta)}. Their connecting edge costs at least that much, so both state areas are at least {int(delta)}.')
         excluded={}
-        for r in range(SIZE):
-            for c in range(SIZE):
+        for r in range(self.size):
+            for c in range(self.size):
                 reasons=[]
                 if clues.get((r,c),0)>0: reasons.append('A positive clue cannot be a singleton capitol.')
                 for q in neighbors(r,c):
@@ -339,14 +342,14 @@ class GridState:
         for p0,n in clues.items():
             if n==0 and bounds[p0[0]][p0[1]]%2==0:
                 bound(p0,bounds[p0[0]][p0[1]]+1,'A capitol-bearing state has odd area; round the size lower bound up to the next odd number.')
-        heat=[[None for _ in range(SIZE)] for _ in range(SIZE)]
-        for r in range(SIZE):
-            for c in range(SIZE):
+        heat=[[None for _ in range(self.size)] for _ in range(self.size)]
+        for r in range(self.size):
+            for c in range(self.size):
                 if bounds[r][c]>1: heat[r][c]=3
                 if (r,c) in candidates: heat[r][c]=2
                 if clues.get((r,c))==0: heat[r][c]=4
                 if (r,c) in forced: heat[r][c]=1
-                if bounds[r][c]>SIZE*SIZE:
+                if bounds[r][c]>self.size*self.size:
                     contradictions.append({'cell':[r,c],'reason':'Required state area exceeds the whole board.'})
         for entry in contradictions: heat[entry['cell'][0]][entry['cell'][1]]=5
         return {'heatmap':heat,'notes':notes,'minimum_state_sizes':bounds,'one_clues':groups,
@@ -364,7 +367,7 @@ class GridState:
         """
         if aggregation not in ('count', 'min_remaining'):
             raise ValueError('Unknown heatmap aggregation.')
-        heatmap = [[0 if aggregation == 'count' else None for _ in range(SIZE)] for _ in range(SIZE)]
+        heatmap = [[0 if aggregation == 'count' else None for _ in range(self.size)] for _ in range(self.size)]
         sources = []
         skipped = []
         for r, row in enumerate(self.grid):
@@ -376,8 +379,8 @@ class GridState:
                     continue
                 values = self.weighted_movement_heatmap(r,c) if use_region_sizes else self.movement_heatmap(r,c)
                 sources.append({'source': [r,c], 'budget': cell.starting_number, 'heatmap': values})
-                for rr in range(SIZE):
-                    for cc in range(SIZE):
+                for rr in range(self.size):
+                    for cc in range(self.size):
                         value = values[rr][cc]
                         if value is None:
                             continue
@@ -404,15 +407,15 @@ class GridState:
         validation = self.validate_regions() if use_derived_capitals else None
         origins = set(tuple(cell) for cell in validation['derived_capitols']) if validation else {(r,c) for r,row in enumerate(self.grid) for c,cell in enumerate(row) if cell.is_capital}
         regions = self.connected_regions()
-        ids = [[None for _ in range(SIZE)] for _ in range(SIZE)]
-        sizes = [[None for _ in range(SIZE)] for _ in range(SIZE)]
+        ids = [[None for _ in range(self.size)] for _ in range(self.size)]
+        sizes = [[None for _ in range(self.size)] for _ in range(self.size)]
         for index, region in enumerate(regions):
             region['capitals'] = [[r,c] for r,c in region['cells'] if (r,c) in origins]
             for r,c in region['cells']:
                 ids[r][c] = index
                 sizes[r][c] = region['area']
-        costs = [[None for _ in range(SIZE)] for _ in range(SIZE)]
-        nearest = [[None for _ in range(SIZE)] for _ in range(SIZE)]
+        costs = [[None for _ in range(self.size)] for _ in range(self.size)]
+        nearest = [[None for _ in range(self.size)] for _ in range(self.size)]
         queue = []
         capitals = []
         for r, row in enumerate(self.grid):
@@ -427,7 +430,7 @@ class GridState:
             if costs[r][c] != cost or sizes[r][c] is None:
                 continue
             for nr,nc in ((r-1,c),(r+1,c),(r,c-1),(r,c+1)):
-                if not (0 <= nr < SIZE and 0 <= nc < SIZE) or sizes[nr][nc] is None:
+                if not (0 <= nr < self.size and 0 <= nc < self.size) or sizes[nr][nc] is None:
                     continue
                 edge = sizes[r][c] if ids[r][c] == ids[nr][nc] else min(sizes[r][c],sizes[nr][nc])
                 new_cost = cost + edge
@@ -456,18 +459,178 @@ class GridState:
                 'capital_mode':'derived' if use_derived_capitals else 'marked',
                 'invalid_state_count':validation['invalid_state_count'] if validation else None}
 
+    def validate_partial(self, include_paths=False):
+        """Check fixed painted states; unpainted area 1 is an optimistic cost.
+
+        Blank squares may later become capitols unless a positive checked
+        number forbids it. Unit-cost shortcuts never prove 'too cheap': only
+        routes wholly inside painted states supply an upper distance bound.
+        Passing is necessary consistency, not existence of a completion.
+        """
+        import heapq
+        size = self.size
+        regions = self.validate_regions()
+        areas = self.region_areas()
+        notes = [[[] for _ in range(size)] for _ in range(size)]
+        heat = [[None for _ in range(size)] for _ in range(size)]
+        numbers = []
+        positive = set()
+        required = set()
+        for r,row in enumerate(self.grid):
+            for c,cell in enumerate(row):
+                if cell.capital_required or cell.starting_number == 0:
+                    required.add((r,c))
+                for field in ('starting_number',):
+                    value = getattr(cell,field)
+                    if value is not None:
+                        numbers.append({'cell':[r,c], 'field':field, 'expected':value})
+                        if value > 0:
+                            positive.add((r,c))
+                        if value == 0:
+                            required.add((r,c))
+        known = {tuple(region['capitol']) for region in regions['regions']
+                 if region['valid_state'] and region['capitol'] is not None}
+        possible = known | { (r,c) for r in range(size) for c in range(size)
+                            if areas[r][c] == 0 and (r,c) not in positive }
+        # Contradictory positive/zero labels are handled explicitly below.
+        possible |= {p for p in required if not areas[p[0]][p[1]]}
+        def routes(seeds, painted_only=False, next_steps=None):
+            result = [[float('inf') for _ in range(size)] for _ in range(size)]
+            queue = []
+            for r,c in seeds:
+                if painted_only and not areas[r][c]:
+                    continue
+                result[r][c] = 0
+                heapq.heappush(queue,(0,r,c))
+            while queue:
+                cost,r,c = heapq.heappop(queue)
+                if cost != result[r][c]:
+                    continue
+                for rr,cc in ((r-1,c),(r+1,c),(r,c-1),(r,c+1)):
+                    if not (0 <= rr < size and 0 <= cc < size):
+                        continue
+                    if painted_only and not areas[rr][cc]:
+                        continue
+                    edge = min(areas[r][c] or 1, areas[rr][cc] or 1)
+                    value = cost+edge
+                    if value < result[rr][cc]:
+                        result[rr][cc] = value
+                        if next_steps is not None:
+                            next_steps[rr][cc] = (r,c)
+                        heapq.heappush(queue,(value,rr,cc))
+            return result
+        next_lower = [[None]*size for _ in range(size)] if include_paths else None
+        next_upper = [[None]*size for _ in range(size)] if include_paths else None
+        next_known = [[None]*size for _ in range(size)] if include_paths else None
+        lower = routes(possible, next_steps=next_lower)
+        upper = routes(known, painted_only=True, next_steps=next_upper)
+        unit_routes = routes(known | required, next_steps=next_known)
+        def trace(r,c,distances,next_steps):
+            if distances[r][c] == float('inf'):
+                return None
+            cost = distances[r][c]
+            cells = [[r,c]]
+            while next_steps[r][c] is not None:
+                r,c = next_steps[r][c]
+                cells.append([r,c])
+            return {'cells':cells, 'cost':cost, 'destination':[r,c],
+                    'provisional':(r,c) not in known | required or
+                                  any(not areas[rr][cc] for rr,cc in cells)}
+        def finite(value):
+            return None if value == float('inf') else value
+        for region in regions['regions']:
+            for r,c in region['cells']:
+                heat[r][c] = 0 if region['issues'] else 2
+                notes[r][c].extend(region['issues'])
+                if not region['issues']:
+                    notes[r][c].append('Current painted state satisfies the symmetry and capitol rules.')
+        # Fixed paths constrain differences even when neither number has a
+        # known route to a capitol. Ignore all edges involving unpainted cells.
+        pair_issues = {}
+        for a in numbers:
+            r,c = a['cell']
+            if not areas[r][c]:
+                continue
+            paths = routes({(r,c)},painted_only=True)
+            for b in numbers:
+                rr,cc = b['cell']
+                if abs(a['expected']-b['expected']) > paths[rr][cc]:
+                    pair_issues.setdefault((r,c),[]).append(
+                        f"Number {b['expected']} at R{rr+1} C{cc+1} differs by more than the fixed painted route cost {paths[rr][cc]}.")
+        checks = []
+        for number in numbers:
+            r,c = number['cell']; value = number['expected']
+            reasons = []
+            if value < 0 or value != int(value):
+                reasons.append('A distance must be a nonnegative integer.')
+            if (r,c) in required and value != 0:
+                reasons.append('This square is required to be a capitol, so its distance must be zero.')
+            if value == 0 and areas[r][c] and (r,c) not in known:
+                reasons.append('A zero distance requires a capitol at this square; its painted state does not have one here.')
+            if lower[r][c] > value:
+                reasons.append('No possible capitol is reachable.' if lower[r][c] == float('inf') else
+                               f'Even with unpainted squares costing 1 and possible future capitols, the cheapest cost is {lower[r][c]}, above {value}.')
+            if upper[r][c] < value:
+                reasons.append(f'A route entirely through painted states reaches a capitol for {upper[r][c]}, below {value}.')
+            reasons.extend(pair_issues.get((r,c),[]))
+            if reasons:
+                status = 'contradiction';heat[r][c] = 0
+            elif lower[r][c] == upper[r][c] == value:
+                status = 'fixed_match'
+                if heat[r][c] != 0:
+                    heat[r][c] = 2
+            else:
+                status = 'unresolved'
+                if heat[r][c] != 0:
+                    heat[r][c] = 1
+            notes[r][c].extend(reasons)
+            checks.append(dict(number,status=status,reasons=reasons,
+                               lower_bound=finite(lower[r][c]),upper_bound=finite(upper[r][c]),
+                               unit_cost_to_known_capitol=finite(unit_routes[r][c])))
+            if include_paths:
+                checks[-1]['paths'] = {
+                    'known':trace(r,c,unit_routes,next_known),
+                    'lower':trace(r,c,lower,next_lower),
+                    'upper':trace(r,c,upper,next_upper),
+                }
+        for region in regions['regions']:
+            cells = {tuple(cell) for cell in region['cells']}
+            related = [check for check in checks if tuple(check['cell']) in cells]
+            region['number_contradictions'] = sum(check['status']=='contradiction' for check in related)
+            bad = bool(region['issues'] or region['number_contradictions'])
+            unresolved = any(check['status']=='unresolved' for check in related)
+            region['partial_status'] = 'contradiction' if bad else 'unresolved' if unresolved else 'locally_consistent'
+            for r,c in cells:
+                heat[r][c] = 0 if bad else 1 if unresolved else 2
+                if region['number_contradictions']:
+                    notes[r][c].append('A checked number in this painted state contradicts its current borders; select the number for details.')
+        contradictions = sum(c['status']=='contradiction' for c in checks)
+        invalid_states = sum(bool(region['issues']) for region in regions['regions'])
+        return {'heatmap':heat,'regions':regions['regions'],'checks':checks,'notes':notes,
+                'derived_capitols':[list(p) for p in sorted(known)],
+                'lower_bounds':[[finite(x) for x in row] for row in lower],
+                'upper_bounds':[[finite(x) for x in row] for row in upper],
+                'unit_costs':[[finite(x) for x in row] for row in unit_routes],
+                'uncolored_count':regions['uncolored_count'],
+                'complete':regions['complete'], 'number_contradictions':contradictions,
+                'invalid_state_count':invalid_states,
+                'unresolved_count':sum(c['status']=='unresolved' for c in checks),
+                'fixed_match_count':sum(c['status']=='fixed_match' for c in checks),
+                'consistent':not (contradictions or invalid_states),
+                'scope':'Painted components are fixed complete states. Unpainted cells cost 1 for lower bounds, not final distance predictions. No contradiction found is not proof that a completion exists.'}
+
     def candidate_states(self, row, col, max_area=7, **limits):
         """Enumerate locally compatible symmetric states; see completeness metadata."""
         from candidate_search import search_candidates
         return search_candidates(self,row,col,max_area,**limits)
 
-    def numbers(self, field='user_number', empty=0):
-        if field not in ('starting_number', 'user_number'):
+    def numbers(self, field='starting_number', empty=0):
+        if field != 'starting_number':
             raise ValueError('Choose a numeric field.')
         return [[getattr(cell, field) if getattr(cell, field) is not None else empty for cell in row] for row in self.grid]
 
 def validate_value(field, value):
-    if field in ('starting_number', 'user_number'):
+    if field == 'starting_number':
         import math
         if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or abs(value) > 1e15):
             raise ValueError('Numbers must be finite and between -1e15 and 1e15.')
@@ -519,8 +682,8 @@ class Workspace:
             self.experimental = GridState.from_dict(snapshot)
         else:
             field = LAYERS[layer]
-            for r in range(SIZE):
-                for c in range(SIZE):
+            for r in range(self.saved.size):
+                for c in range(self.saved.size):
                     setattr(self.grid[r][c], field, True if field == 'is_capital' and self.grid[r][c].capital_required else snapshot[r][c])
 
     def edit(self, layer, cells, value, target=None):
@@ -530,10 +693,10 @@ class Workspace:
         validate_value(field, value)
         if field == 'region_color' and value:
             value = value.lower()
-        if not isinstance(cells, list) or not cells or len(cells) > SIZE * SIZE:
-            raise ValueError('Select between 1 and 121 cells.')
+        if not isinstance(cells, list) or not cells or len(cells) > self.saved.size * self.saved.size:
+            raise ValueError(f'Select between 1 and {self.saved.size ** 2} cells.')
         for coord in cells:
-            if not isinstance(coord, (list, tuple)) or len(coord) != 2 or any(type(x) is not int or not 0 <= x < SIZE for x in coord):
+            if not isinstance(coord, (list, tuple)) or len(coord) != 2 or any(type(x) is not int or not 0 <= x < self.saved.size for x in coord):
                 raise ValueError('Invalid cell coordinate.')
         state = self.experimental if layer == 'experimental' else self.saved
         if field == 'is_capital' and value is False and any(state.grid[r][c].capital_required for r, c in cells):
@@ -581,13 +744,15 @@ class Workspace:
             raise ValueError('Unsupported project file.')
         workspace = cls(GridState.from_dict(data['grid']))
         for layer, raw in data.get('histories', {}).items():
+            if layer == 'numbers':  # Retired notes history.
+                continue
             if layer not in LAYERS:
                 raise ValueError('Invalid history layer.')
             states, labels, cursor = raw['states'], raw['labels'], raw['cursor']
             if not isinstance(states, list) or not states or not isinstance(labels, list) or len(states) != len(labels) or any(not isinstance(x, str) for x in labels) or type(cursor) is not int or not 0 <= cursor < len(states):
                 raise ValueError('Invalid history.')
             for snapshot in states:
-                if not isinstance(snapshot, list) or len(snapshot) != SIZE or any(not isinstance(row, list) or len(row) != SIZE for row in snapshot):
+                if not isinstance(snapshot, list) or len(snapshot) != workspace.saved.size or any(not isinstance(row, list) or len(row) != workspace.saved.size for row in snapshot):
                     raise ValueError('Invalid history grid.')
                 for row in snapshot:
                     for value in row:

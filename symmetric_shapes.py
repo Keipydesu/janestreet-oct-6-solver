@@ -5,12 +5,18 @@ Every square-grid state symmetry contains either a reflection or a half-turn
 therefore covers ALL symmetric shapes, without requiring a particular symmetry.
 """
 from collections import deque
-from candidate_search import NEIGHBORS, indices
+from functools import lru_cache
+from candidate_search import NEIGHBORS, indices, neighbors_for_size
 from model import SIZE
 
 NEIGHBOR_MASK = {i:sum(1<<j for j in cells) for i,cells in NEIGHBORS.items()}
 
-def connected(mask):
+@lru_cache(maxsize=11)
+def neighbor_masks(size):
+    return {i:sum(1<<j for j in cells) for i,cells in neighbors_for_size(size).items()}
+
+def connected(mask, size=SIZE):
+    NEIGHBOR_MASK = neighbor_masks(size)
     reached=front=mask & -mask
     while front:
         adjacent=0
@@ -19,12 +25,14 @@ def connected(mask):
         reached |= front
     return reached==mask
 
-def orbit_walk(root, max_area, transform, can_extend=None):
+def orbit_walk(root, max_area, transform, can_extend=None, size=SIZE):
     """Connected quotient-graph subsets. Actual cell connectivity checked later.
 
     The starting orbit can be two disconnected cells. Do NOT require intermediate
     masks to be connected: later orbits can connect the two halves of a state.
     """
+    SIZE = size
+    NEIGHBOR_MASK = neighbor_masks(size)
     r,c=divmod(root,SIZE);rr,cc=transform(r,c)
     if not (0<=rr<SIZE and 0<=cc<SIZE) or abs(rr-r)+abs(cc-c)>max_area-1:
         return
@@ -54,12 +62,13 @@ def orbit_walk(root, max_area, transform, can_extend=None):
             if child.bit_count()<=max_area and child not in seen:
                 seen.add(child);stack.append(child)
 
-def symmetric_masks(root,max_area,can_extend=None):
+def symmetric_masks(root,max_area,can_extend=None, size=SIZE):
     """Round-robin DFS across axes/centers; visits large shapes early.
 
     Duplicates across symmetry families are deliberately left to the caller.
     Yielding intermediate disconnected sets allows bounded search accounting.
     """
+    SIZE = size
     transforms=[]
     for k in range(2*SIZE-1):
         transforms.extend((lambda r,c,k=k:(k-r,c), lambda r,c,k=k:(r,k-c),
@@ -69,7 +78,7 @@ def symmetric_masks(root,max_area,can_extend=None):
     for kr in range(2*SIZE-1):
         for kc in range(2*SIZE-1):
             transforms.append(lambda r,c,kr=kr,kc=kc:(kr-r,kc-c))
-    walkers=deque(orbit_walk(root,max_area,t,can_extend) for t in transforms)
+    walkers=deque(orbit_walk(root,max_area,t,can_extend,size=size) for t in transforms)
     while walkers:
         walker=walkers.popleft()
         try:

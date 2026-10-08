@@ -8,5 +8,10 @@ venv/
 *.pem
 *.key
 project.json
+project-small.json
 before-*.json
 solver*report*.json
+
+/rust-solver/target/
+
+/.solver-checkpoints/

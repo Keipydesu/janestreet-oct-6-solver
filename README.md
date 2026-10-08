@@ -27,9 +27,113 @@ py -3 app.py
 ```
 
 The browser opens a local editor at `http://127.0.0.1:8000`.
+Use the **5 × 5** link in the header or open `http://127.0.0.1:8000/small`
+to work on the smaller puzzle with all the same editor tools. Its main grid and
+history save separately to `project-small.json`; the original puzzle stays at `/`.
+
 It starts from the clues in `starting_grid.py`. Save stores your local work in
 `project.json`; saved sessions, backups, and generated reports are ignored by Git.
 The server binds only to localhost and generates a fresh edit token at startup.
+
+## State counts layer
+
+Choose **State counts** to color every square by how many distinct candidate
+states include it, using committed starting clues only. Blue means fewer,
+orange means more; colors use a logarithmic scale. Adjust **Maximum state area**
+(default 98, or 25 on the small board) and use **Recount states** to run again.
+Paint and manual stars do not affect the result. Editing clues invalidates counts.
+
+The eight-second search combines and deduplicates shapes found from every root.
+A `~` prefix means the count is sampled; `~0` means none found, not impossibility.
+Unprefixed counts exhaust the local checks within the selected area limit.
+These are connected symmetric candidates passing local clue checks and capitol
+exclusions, not states proven to occur in a complete solution. The selected-cell
+panel explains this scope. The layer never edits your grid or history.
+
+## Whole-board decomposition
+
+Build the Rust engine once (Rust 1.90 or newer):
+
+```sh
+cargo build --release --manifest-path rust-solver/Cargo.toml
+```
+
+Restart `app.py` after building. Click **Decompose board** in the editor's right panel to combine candidate states
+into a complete, non-overlapping partition and independently check all clue
+distances. It uses committed starting clues, ignoring paint. Search is bounded to eight seconds; an unsuccessful
+search does not prove impossibility or uniqueness.
+
+A verified result stays hidden behind **Reveal verified decomposition**.
+The preview does not change your painted grid or saved files.
+The solver supports both the 5×5 and 11×11 routes.
+
+## Check current borders
+
+Choose **Check current borders** in the layer list. Enable **Paint while checking** to edit directly in this view; leave it off
+to inspect cells. Checks refresh after each stroke and region undo.
+
+Candidate states and Candidate heatmap treat paint as partial regions. With
+**Use paint as a constraint** enabled, candidates must include the source’s
+connected painted group, avoid other colors, and never split a painted group.
+Other painted regions can grow: their current sizes, symmetries, and derived
+capitols are not final. Only the candidate under consideration has fixed borders
+in the border check; outside squares use optimistic cost 1. Failed candidates
+appear under the **Border check** rejection reason.
+
+**Consider manual stars** in either candidate view requires marked squares to be
+symmetry-derived capitols, with or without paint constraints. Unmarked squares
+may still be capitols. Results are conditional on these optional assumptions;
+manual stars do not change the saved clues.
+
+The candidate heatmap combines different shapes; its outline is not itself a
+candidate state. Painted source cells are required in every candidate, but the
+candidate can add cells to complete their symmetry. A capitol need not be a
+rotation center: reflection-only states are allowed when every symmetry fixes
+exactly that one square. Expand **Inspect individual shapes** to view one
+candidate, its symmetry, and its derived capitol (☆).
+
+Percentages describe membership among candidates found, not solution
+probabilities. A `~` prefix marks a non-exhaustive search. Near-100% values never
+round up to 100%; changing constraints hides stale percentages and colors.
+
+In the separate **Check current borders** view, each painted component is
+treated as a finished state with fixed borders.
+Red means an invalid shape, capitol conflict, or a contradicted starting clue.
+Yellow means a clue is unresolved; green means no local contradiction was found.
+Click a clue to highlight its cheapest route to a known/required capitol and
+see its cost and destination. Use **Highlight path** to inspect the minimum
+possible route or the painted-only route instead. Routes through unpainted
+cells are provisional; a minimum-possible route may end at a future capitol.
+
+Unpainted squares use area 1 for optimistic distances and can contain future
+capitols. A clue smaller than that optimistic distance cannot work with these
+borders. A clue larger than a fixed route through painted states also fails.
+Cheap routes through unpainted squares alone do not prove a failure, because
+those routes can get more expensive when the board is completed. Passing the
+check is necessary consistency, not a guarantee of a full solution.
+
+The My numbers layer has been removed. Older project files still load: notes
+and their history are ignored, and the next save omits them. Starting clues,
+regions, capitols, and their histories are preserved.
+
+## Bounding the largest state
+
+```bash
+.venv/bin/python largest_state_bound.py --seconds 60 --output solver-largest-state-report.json
+```
+
+This optional OR-Tools analysis tests states larger than half the 11×11 board.
+It first checks every possible reflection or half-turn against the small-clue
+escape requirements. It then uses exact area inventory and distance constraints,
+actual templates for areas 2 through 4, per-area capitol budgets, and geometric
+checks with sound cuts on returned assignments. The report distinguishes a
+proved upper bound from a fully verified witness and from a timeout.
+
+On the original clues, the symmetry/escape stage proved an upper bound of 98.
+A 60-second-budget run did not improve that bound in the combined model; it
+returned no full assignment to check. This does not establish that area 98 is
+achievable. The previously proved lower bound remains 26. These bounds concern
+the original clues, and are not automatically imposed on edited puzzles.
 
 ## Tests
 
@@ -62,10 +166,81 @@ Python: `state.candidate_states(row, col, max_area=20, respect_paint=True)`.
 
 ### Combined solver
 
-Run `python3 solver.py --seconds 120 --output solver-report.json` to combine
-clue deductions, symmetric candidate states (up to 121 cells), non-overlapping
+The editor now uses the Rust engine through `rust_solver.py`. Run it from the
+project directory:
+
+```sh
+python3 rust_solver.py --seconds 120 --output solver-rust-report.json
+python3 rust_solver.py --size 5 --seconds 10 --output solver-small-report.json
+# Use your saved editor clues:
+python3 rust_solver.py --input project.json --seconds 600 --max-area 98
+```
+
+Or run the native executable directly (input is a clue matrix, editor grid, or
+project JSON):
+
+```sh
+./rust-solver/target/release/decomposition --input project.json --seconds 600 --max-area 98 --output solver-rust-report.json
+```
+
+Progress is now saved automatically. Running the same command again continues
+from its checkpoint; repeated **Decompose board** clicks do the same. Automatic
+checkpoints live in `.solver-checkpoints/`, keyed by starting clues, board size and
+maximum area, so paint changes do not reset progress and changed clues get a
+separate search. Restarting the editor also preserves these files.
+
+The Python CLI defaults to `--checkpoint auto`. Its path is
+`<repository>/.solver-checkpoints/<24-character hash>.json`, regardless of the
+directory you run the command from. In this checkout the default directory is
+`/Users/thekpokay/projects/janestreet-puzzles/oct-6/.solver-checkpoints/`.
+The hash depends on the clues, board size and maximum area. An explicit relative
+path such as `--checkpoint my-search.json` is relative to your current directory.
+The default report, `solver-rust-report.json`, is separate from the checkpoint.
+
+```sh
+# Run for another ten minutes, resuming previous progress automatically:
+python3 rust_solver.py --seconds 600 --max-area 98
+# Choose a checkpoint explicitly:
+python3 rust_solver.py --seconds 600 --checkpoint my-search.json
+# Deliberately start over for the selected puzzle/checkpoint:
+python3 rust_solver.py --seconds 600 --fresh
+# One-off run without saving or resuming:
+python3 rust_solver.py --seconds 10 --no-checkpoint
+```
+
+For the native executable, add `--checkpoint my-search.json` to enable resume.
+Keep checkpoint paths separate from report/output paths. Checkpoints retain
+candidate shapes, per-root symmetry-enumeration stacks and visited sets, remaining
+partition-search branches, explored equivalent partitions, and cumulative stats.
+The current candidate pool's search is resumed before generating more candidates.
+When the pool grows, its partition search must restart because earlier rejections
+were conditional on the old pool; generated candidates and enumeration progress
+are retained. An area stage grows only after its enumeration finishes.
+
+Checkpoints are written atomically about every five seconds at work-unit
+boundaries and at normal completion. After Ctrl+C or a crash, rerun the same
+command to recover the last completed checkpoint; work since that save can be
+lost. Time limits are cooperative and checkpoint I/O adds overhead. Large searches
+can produce large checkpoint files. A file lock prevents two processes from
+using the same checkpoint simultaneously. Explicit checkpoints with mismatched
+clues/area limits or unreadable contents are rejected without being overwritten;
+`--fresh` deliberately replaces the selected checkpoint. Old runs started before
+this feature cannot have their in-memory progress recovered.
+
+The Rust core uses `u128` masks for shapes, occupied squares and capitols,
+precomputed adjacency masks, a deduplicated candidate vector, and per-cell
+candidate indexes. Area and distance data use flat vectors. The 2D grid remains
+the editor/JSON format. Candidate enumeration, mathematical pruning and exact
+cover all run in Rust; the Python bridge independently validates returned
+solutions before the editor can display or apply them. Direct native CLI output
+is validated by the Rust geometry and shortest-path checks.
+
+The Python reference remains available as
+`python3 solver.py --seconds 120 --output solver-report.json`. Both engines combine
+clue deductions, symmetric candidate states (up to 98 cells by default), non-overlapping
 full-board coverage, and global weighted shortest-path bounds. The search
-chooses the uncovered cell with fewest compatible candidates and backtracks.
+chooses the uncovered cell with fewest distinct remaining areas, breaking ties by
+smaller maximum area and fewer shapes, and tries smaller candidates first.
 Every completed solution is independently checked by `validate_puzzle()`.
 This uses the supplied starting clues and ignores paint; it does not modify the
 running editor, saved project, or experimental layer.
@@ -84,9 +259,37 @@ the remaining possible capitols. Contradictory bounds prune the branch before
 further partition search. Reports include `clue_path_prunes`, `capitol_prunes`,
 and `distance_prunes` when those rejection types occur.
 
+Before branching, the decomposition solver also checks the shortest-path
+(Bellman) equality for each candidate shape. Every non-capitol cell must have
+at least one possible descending step whose edge cost plus neighbor distance
+can equal its own distance. Internal edges use the shape's exact area; external
+edges use bounds from remaining candidates. Its derived capitol must permit
+distance zero, and every adjacent pair must permit the distance inequality.
+Unsupported shapes are removed from every cell's options, then tighter bounds
+are recomputed for up to three rounds per search node. This also checks chosen
+states. Reports count `candidate_support_prunes`, `support_rounds`, and
+`bellman_prunes`. These are necessary conditions, not a guarantee that surviving
+shapes can form a solution; sampled-pool restrictions are rebuilt after expansion.
+
+Generation starts with states up to area 4 (forced singletons first), with
+larger required areas deferred to later rounds. Per-root limits then grow
+roughly by doubling up to the configured maximum; completing a smaller stage
+does not mark that root exhausted at the full limit. The initial generation
+pass uses at most half the time budget, leaving time for decomposition search.
+Reports include `largest_generation_limit` and `initial_forbidden_capitols`.
+Initial capitol exclusions use the full configured area bound, never the
+smaller temporary generation limit, and count `initial_capitol_prunes`.
+
+Failed partial partitions are cached by per-cell area and capitol locations,
+ignoring alternative equal-area borders only when those quantities agree.
+This preserves travel costs while retaining real symmetric shapes for final
+validation. The cache resets when the pool grows; `equivalent_partition_prunes`
+counts repeated failed configurations skipped within a pool.
+
 The solver caches starting-clue deductions once for backtracking. When a sampled
 pool is exhausted, it uses remaining time to expand candidate generation in
-batches, prioritizing less-explored roots and cells with coverage failures.
+batches, prioritizing smaller next area limits and fewer clue-compatible areas,
+then less-explored roots and cells with coverage failures.
 Longer generation budgets reach beyond earlier samples. Each enlarged pool
 restarts partition search because earlier pool-dependent rejections do not
 apply to the new candidates. Reports count `search_rounds`, `expansion_batches`,
@@ -130,7 +333,7 @@ The supplied puzzle fails an optional 20-cell limit before enumeration: R11C9 ha
 of area at most 20, this route costs at most 60. Consequently some state has
 area at least ceil(77/3) = 26. The solver returns `area_limit_contradiction`
 with this witness immediately. The candidate generator and heatmap now accept areas 1–121; the combined solver
-defaults to 121. Searches remain bounded samples even when the area limit covers
+defaults to 98 (or the board area on smaller boards). Searches remain bounded samples even when the area limit covers
 the entire board. Travel uses minimum total weighted cost, never fewest steps.
 
 
@@ -348,3 +551,16 @@ process as well as providing a separately readable explanation report.
 The existing correctness argument applies because every added restriction is
 a necessary condition for a legal partition. Historical timings above predate
 this preprocessing; no new speed claim is being made.
+
+Rust verification:
+
+```sh
+cargo test --manifest-path rust-solver/Cargo.toml
+python3 -m unittest test_rust_solver
+```
+
+The Rust geometry tests compare all 511 nonempty 3×3 cell sets against frozen
+Python reference results and compare orbit enumeration with brute force. Native
+integration tests independently validate the supplied 5×5 solution and check
+timeouts, invalid clues, and rejection of incorrectly claimed solutions. Neither
+engine guarantees a solution within a time limit; sampled failure is inconclusive.

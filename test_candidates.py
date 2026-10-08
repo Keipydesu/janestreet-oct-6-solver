@@ -170,4 +170,93 @@ class PaintConstraintTests(unittest.TestCase):
         state.candidate_states(0,0,3,respect_paint=True)
         self.assertEqual(before,state.to_dict())
 
+class ManualStarConstraintTests(unittest.TestCase):
+    def test_stars_require_the_symmetry_capitol_with_and_without_paint(self):
+        for paint in (False, True):
+            for borders in (False, True):
+                with self.subTest(paint=paint, borders=borders):
+                    state = GridState(5)
+                    state.grid[0][0].is_capital = True
+                    state.grid[0][0].region_color = '#aaaaaa'
+                    before = state.to_dict()
+                    options = dict(time_limit=10, respect_paint=paint, check_borders=borders)
+                    ignored = state.candidate_states(0, 0, 3, **options)
+                    required = state.candidate_states(0, 0, 3, respect_stars=True, **options)
+                    self.assertGreater(ignored['survivor_count'], required['survivor_count'])
+                    self.assertGreater(required['survivor_count'], 0)
+                    self.assertTrue(all(c['capitol'] == [0, 0] for c in required['survivors']))
+                    self.assertTrue(required['conditional'])
+                    self.assertEqual(required['forced_cells'], [])
+                    self.assertEqual(state.to_dict(), before)
+
+    def test_line_and_cross_have_no_capitol_even_at_center(self):
+        shapes = [([(2, 1), (2, 2), (2, 3)], (2, 2)),
+                  ([(1, 2), (2, 1), (2, 2), (2, 3), (3, 2)], (2, 2))]
+        for cells, star in shapes:
+            with self.subTest(cells=cells):
+                state = GridState(5)
+                for r, c in cells:
+                    state.grid[r][c].region_color = '#aaaaaa'
+                state.grid[star[0]][star[1]].is_capital = True
+                options = dict(respect_paint=True, check_borders=True, time_limit=10)
+                ignored = state.candidate_states(*star, len(cells), **options)
+                required = state.candidate_states(*star, len(cells), respect_stars=True, **options)
+                self.assertEqual(ignored['survivor_count'], 1)
+                self.assertEqual(required['survivor_count'], 0)
+
+    def test_outside_stars_constrain_routes_like_zero_clues(self):
+        state = GridState(5)
+        state.grid[0][1].is_capital = True
+        state.grid[1][0].starting_number = 2
+        starred = state.candidate_states(0, 0, 4, respect_stars=True, check_borders=True)
+        state.grid[0][1].starting_number = 0
+        zero = state.candidate_states(0, 0, 4, check_borders=True)
+        self.assertEqual(starred['survivors'], zero['survivors'])
+        self.assertEqual(starred['heatmap'], zero['heatmap'])
+
+    def test_lopsided_paint_must_be_completed_around_its_marked_capitol(self):
+        state = GridState(5)
+        state.grid[0][0].is_capital = True
+        for r, c in [(0, 0), (0, 1)]:
+            state.grid[r][c].region_color = '#aaaaaa'
+        result = state.candidate_states(0, 1, 3, respect_paint=True,
+                                        respect_stars=True, check_borders=True)
+        self.assertTrue(result['complete_within_limit'])
+        self.assertEqual(result['survivor_count'], 1)
+        candidate = result['survivors'][0]
+        self.assertEqual(set(map(tuple, candidate['cells'])), {(0, 0), (0, 1), (1, 0)})
+        self.assertEqual(candidate['capitol'], [0, 0])
+        # Reflection in the diagonal uniquely fixes the elbow. A capitol
+        # does not require rotational symmetry or the bounding-box center.
+        self.assertEqual(candidate['rotations'], [])
+        self.assertEqual(candidate['reflections'], ['main_diagonal'])
+
+    def test_starred_painted_search_matches_unpruned_enumeration(self):
+        state = GridState(5)
+        state.grid[2][2].is_capital = True
+        for r, c in [(2, 2), (2, 3)]:
+            state.grid[r][c].region_color = '#aaaaaa'
+        state.grid[0][0].region_color = '#bbbbbb'
+        options = dict(max_area=5, respect_paint=True, respect_stars=True,
+                       check_borders=True, time_limit=20, preview_limit=None)
+        actual = state.candidate_states(2, 3, **options)
+        reference = state.candidate_states(2, 3, strategy='connected_growth', **options)
+        self.assertTrue(actual['complete_within_limit'])
+        self.assertTrue(reference['complete_within_limit'])
+        self.assertEqual(actual['heatmap'], reference['heatmap'])
+        self.assertGreater(actual['survivor_count'], 0)
+        for candidate in actual['survivors']:
+            self.assertEqual(candidate['capitol'], [2, 2])
+            for operation in state.shape_symmetry(candidate['cells'])['operations']:
+                self.assertEqual(operation['fixed_cells'], [[2, 2]])
+
+    def test_conflicting_clue_and_invalid_option(self):
+        state = GridState(5)
+        state.grid[0][0].is_capital = True
+        state.grid[0][0].starting_number = 2
+        with self.assertRaisesRegex(ValueError, 'conflicts'):
+            state.candidate_states(0, 0, 3, respect_stars=True)
+        with self.assertRaisesRegex(ValueError, 'true or false'):
+            state.candidate_states(0, 0, 3, respect_stars='yes')
+
 if __name__=='__main__': unittest.main()
